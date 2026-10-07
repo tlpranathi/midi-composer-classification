@@ -1,0 +1,2 @@
+model,best_params,cv_macro_f1,test_accuracy,test_macro_f1
+Tuned RBF SVM,"{'svm__C': 10, 'svm__gamma': 0.01}",0.3421866012775104,0.40816326530612246,0.3875831239467603

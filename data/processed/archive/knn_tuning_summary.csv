@@ -1,0 +1,2 @@
+model,best_params,cv_macro_f1,test_accuracy,test_macro_f1
+Tuned KNN,"{'knn__n_neighbors': 7, 'knn__p': 2, 'knn__weights': 'distance'}",0.27168280620152274,0.32653061224489793,0.2320298122929702

@@ -1,0 +1,2 @@
+best_model,dev_accuracy,dev_macro_f1,test_accuracy,test_macro_f1,initial_train_samples,dev_samples,final_train_samples,test_samples,number_of_features
+Logistic Regression,0.46938775510204084,0.4794039294039294,0.46938775510204084,0.4505050505050505,147,49,196,49,78

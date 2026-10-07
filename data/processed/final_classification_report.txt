@@ -1,0 +1,32 @@
+============================================================
+FINAL MODEL RESULTS
+============================================================
+
+Best model: Logistic Regression
+Number of features: 78
+Initial training samples: 147
+Development samples: 49
+Final training samples: 196
+Test samples: 49
+
+Test Accuracy: 0.469
+Test Macro-F1: 0.451
+
+Classification Report:
+              precision    recall  f1-score   support
+
+     albeniz       0.50      0.33      0.40         3
+       beeth       0.25      0.17      0.20         6
+      chopin       0.56      0.56      0.56         9
+       grieg       0.00      0.00      0.00         3
+       haydn       0.75      0.75      0.75         4
+       liszt       1.00      0.67      0.80         3
+ mendelssohn       0.20      0.33      0.25         3
+      mozart       0.50      0.50      0.50         4
+    schubert       0.40      0.67      0.50         6
+    schumann       0.67      0.40      0.50         5
+      tschai       0.40      0.67      0.50         3
+
+    accuracy                           0.47        49
+   macro avg       0.47      0.46      0.45        49
+weighted avg       0.48      0.47      0.46        49

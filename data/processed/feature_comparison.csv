@@ -1,0 +1,5 @@
+feature_set,number_of_features,accuracy,macro_f1,correct_predictions,test_samples
+Original features,20,0.40816326530612246,0.3875831239467603,20,49
+28 engineered features,28,0.5102040816326531,0.4618654073199528,25,49
+53 features with interval histogram,53,0.5510204081632653,0.5114718614718614,27,49
+78 features with vertical intervals,78,0.5714285714285714,0.5454212454212455,28,49

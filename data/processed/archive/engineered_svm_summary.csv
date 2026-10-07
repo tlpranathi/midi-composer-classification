@@ -1,0 +1,2 @@
+model,number_of_features,best_params,cv_macro_f1,test_accuracy,test_macro_f1,correct_predictions,test_samples
+Tuned SVM (engineered features),28,"{'svm__C': 10, 'svm__gamma': 0.01}",0.3912373069592321,0.5102040816326531,0.4618654073199528,25,49
