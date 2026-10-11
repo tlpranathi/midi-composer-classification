@@ -1,26 +1,38 @@
 # MIDI Composer Classification
 
-Can symbolic MIDI data tell you who wrote a piece of classical piano music? This project extracts 78 hand-engineered musical features from MIDI files, compares classic scikit-learn classifiers, and measures which kinds of features carry the most stylistic signal.
+Can symbolic MIDI data tell you who wrote a piece of classical piano music? This project answers that question with two complementary approaches on the same data and the same train/dev/test split:
+
+1. **Feature-based machine learning.** 78 hand-engineered musical features are extracted from each MIDI file and fed to classic scikit-learn classifiers.
+2. **Deep learning.** The same features go into a small fully connected network, and the raw music, converted to piano-roll images, goes into a convolutional network, with and without data augmentation.
+
+A Streamlit app lets you pick a piece or upload your own MIDI file and see the predicted composer with probabilities.
 
 ## Results at a glance
 
 | Task | Best setup | Result |
 | --- | --- | --- |
-| Composer classification (11 classes) | Logistic Regression, 78 features | **46.9% accuracy, 0.451 macro-F1** on a held-out test set of 49 pieces (23 correct) |
+| Composer classification (11 classes) | Fully connected NN, 78 features | **51.0% accuracy, 0.502 macro-F1** on a held-out test set of 49 pieces (25 correct) |
+| Composer classification (11 classes) | Logistic Regression, 78 features | 46.9% accuracy, 0.451 macro-F1 (23 of 49 correct) |
+| Composer classification (11 classes) | CNN on piano rolls, with augmentation | 26.5% accuracy, 0.293 macro-F1 (13 of 49 correct) |
 | Era classification (Classical vs. Romantic) | RBF SVM, 78 features | 98.0% accuracy, 0.964 macro-F1 on the development set (see the baseline caveat below) |
 
-For context, guessing uniformly among 11 composers gives about 9%, and always predicting the largest class (Chopin) gives about 20%.
+For context, guessing uniformly among 11 composers gives about 9%, and always predicting the largest class (Chopin) gives about 18% on the test set. Differences of a few pieces between models are within the noise of a 49-piece test set; see [Limitations](#limitations).
 
 ## Contents
 
 - [Dataset](#dataset)
+- [Approach overview](#approach-overview)
 - [Features](#features)
+- [Piano-roll representation](#piano-roll-representation)
+- [Models](#models)
 - [Project structure](#project-structure)
 - [Quick start](#quick-start)
+- [Running the demo app](#running-the-demo-app)
 - [Evaluation setup](#evaluation-setup)
 - [Results](#results)
 - [Limitations](#limitations)
 - [Future work](#future-work)
+- [Conclusion](#conclusion)
 - [Data source](#data-source)
 
 ## Dataset
@@ -43,6 +55,21 @@ The project uses 245 MIDI files from 11 composers, stored as `data/midi/<compose
 | `albeniz` | Albéniz | 14 |
 | `tschai` | Tchaikovsky | 12 |
 
+## Approach overview
+
+```text
+                         +--> 78 numerical features --> Logistic Regression, SVM, KNN, LDA,
+                         |    (extract_features.py)      Gradient Boosting (scikit-learn)
+MIDI files --------------+                          \
+                         |                           +--> Fully connected NN (PyTorch)
+                         |
+                         +--> 64 x 1536 piano rolls ----> CNN, +/- augmentation (PyTorch)
+                              (piano_roll_conversion.py)
+
+All models use the same stratified 60/20/20 split (seed 42) and are compared on the same 49 test pieces.
+Predicted composer + probabilities are served by the Streamlit app (src/app.py).
+```
+
 ## Features
 
 Each piece is described by **78 numerical features** computed with [`pretty_midi`](https://github.com/craffel/pretty-midi) in `src/extract_features.py`.
@@ -56,6 +83,40 @@ Each piece is described by **78 numerical features** computed with [`pretty_midi
 | Melodic interval histogram | 25 | Normalized histogram of intervals from -12 to +12 semitones between consecutive notes; larger intervals are clipped into the edge bins |
 | Vertical interval histogram | 25 | Normalized histogram of intervals from -12 to +12 semitones between simultaneously sounding notes, excluding unisons |
 
+## Piano-roll representation
+
+For the convolutional network, each MIDI file is converted to an image-like matrix by `src/piano_roll_conversion.py`:
+
+- **Shape:** 64 pitches by 1536 time steps.
+- **Time resolution:** 10 Hz, so 1536 steps cover 153.6 seconds. Longer pieces are cropped to the first 153.6 s and shorter ones are zero-padded.
+- **Pitch range:** MIDI notes 24 to 87 (C1 to D#6). Notes outside this range are dropped.
+- **Cell value:** note velocity (0 to 127), scaled to 0-1 for the network.
+- All non-drum instruments are merged into one roll.
+
+The rolls are saved to `data/processed/piano_rolls/piano_rolls.npz`, in the same row order as the feature CSV so the two representations line up piece by piece. This file is regenerated by the script and is not committed to git.
+
+## Models
+
+### Classical machine learning (78 features)
+
+Logistic Regression, RBF SVM (`C=10`, `gamma=0.01`), Gradient Boosting, KNN (`k=7`, distance-weighted, Euclidean), and LDA. Pipelines use median imputation and standard scaling where appropriate. Logistic Regression and SVM use balanced class weights. The model with the best development macro-F1 is refit on train + development and scored once on the test set.
+
+### Fully connected neural network (78 features)
+
+`src/train_fcnn.py` trains a PyTorch network with one hidden layer (128 units, ReLU, dropout 0.3) on the same 78 features. The imputer and scaler are fit on the training set only. Training uses class-weighted cross-entropy, AdamW (learning rate 1e-3, weight decay 1e-3), up to 400 epochs, and early stopping on development macro-F1 (patience 60). The best development checkpoint is evaluated once on the test set. Unlike the classical final model, it is trained on the training set only, not train + development.
+
+### Convolutional neural network (piano rolls)
+
+`src/train_cnn.py` trains a CNN on the 64 x 1536 piano rolls: five blocks of 3x3 convolution, batch normalization, ReLU, and 2x2 max-pooling with channels 16, 32, 64, 64, and 128, followed by global average pooling, dropout 0.5, and a linear classifier. It uses class-weighted cross-entropy, AdamW (learning rate 1e-3, weight decay 1e-3), batch size 16, up to 60 epochs, and early stopping on development macro-F1 (patience 15). This is a deliberately small version of the deeper architectures used in the literature, sized for a dataset of 245 pieces.
+
+Run with `--augment`, each training roll is randomly modified on the fly:
+
+| Augmentation | Range |
+| --- | --- |
+| Pitch shift (transposition) | up to ±6 semitones, zero-filled |
+| Time shift | up to ±15 seconds (150 steps), zero-filled |
+| Masking | a random time segment of up to 20 seconds is zeroed |
+
 ## Project structure
 
 ```text
@@ -64,19 +125,26 @@ data/
   processed/             # features, results, plots, and reports
     archive/             # earlier experiments and feature sets
 
+models/                  # trained PyTorch weights and preprocessing used by the demo
+
 src/
-  audit_dataset.py       # validity, note count, and duplicate checks
-  extract_features.py    # builds the 78-feature representation
-  compare_features.py    # compares feature sets as features are added
-  tune_svm.py            # SVM hyperparameter search
-  tune_engineered_svm.py # SVM search on engineered features
-  train_knn.py           # KNN tuning
-  train_lda.py           # LDA baseline
-  train_models.py        # final model comparison and test evaluation
-  pca_analysis.py        # 2D PCA visualization
-  pca_svm_analysis.py    # SVM performance vs. number of PCA components
-  feature_importance.py  # permutation feature importance
-  era_classification.py  # Classical vs. Romantic classification
+  audit_dataset.py          # validity, note count, and duplicate checks
+  extract_features.py       # builds the 78-feature representation
+  compare_features.py       # compares feature sets as features are added
+  tune_svm.py               # SVM hyperparameter search
+  tune_engineered_svm.py    # SVM search on engineered features
+  train_knn.py              # KNN tuning
+  train_lda.py              # LDA baseline
+  train_models.py           # final classical model comparison and test evaluation
+  pca_analysis.py           # 2D PCA visualization
+  pca_svm_analysis.py       # SVM performance vs. number of PCA components
+  feature_importance.py     # permutation feature importance
+  era_classification.py     # Classical vs. Romantic classification
+  piano_roll_conversion.py  # MIDI -> 64 x 1536 piano rolls
+  dl_common.py              # shared split, label encoding, metrics, results logging
+  train_fcnn.py             # fully connected NN on the 78 features
+  train_cnn.py              # CNN on piano rolls, with or without augmentation
+  app.py                    # Streamlit demo
 ```
 
 ## Quick start
@@ -85,13 +153,15 @@ src/
 git clone https://github.com/tlpranathi/midi-composer-classification
 cd midi-composer-classification
 
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-pip install numpy pandas scikit-learn matplotlib pretty_midi
+pip install numpy pandas scikit-learn matplotlib pretty_midi joblib torch streamlit
 ```
 
-Run the main pipeline from the repository root:
+### 1. Feature-based pipeline
+
+Run from the repository root:
 
 ```bash
 python src/audit_dataset.py        # optional dataset sanity check
@@ -109,7 +179,22 @@ python src/feature_importance.py
 python src/era_classification.py
 ```
 
-All outputs are written to `data/processed/`:
+### 2. Deep learning pipeline
+
+These steps need the feature CSV from step 1 (it is already committed, so you can skip step 1 if you only want the neural models). Run them in this order:
+
+```bash
+python src/piano_roll_conversion.py    # creates data/processed/piano_rolls/piano_rolls.npz
+python src/train_fcnn.py               # fully connected NN
+python src/train_cnn.py                # CNN, no augmentation
+python src/train_cnn.py --augment      # CNN, with augmentation
+```
+
+Training runs on a GPU or Apple Silicon (MPS) if one is available and on the CPU otherwise. The two CNN runs are the slowest part.
+
+### Outputs
+
+All outputs are written to `data/processed/` (results) and `models/` (weights):
 
 | Script | Main outputs |
 | --- | --- |
@@ -121,28 +206,44 @@ All outputs are written to `data/processed/`:
 | `pca_svm_analysis.py` | `pca_svm_results.csv` and two accuracy/macro-F1 plots |
 | `feature_importance.py` | `feature_importance.csv`, `feature_importance_top20.png` |
 | `era_classification.py` | `era_classification_results.csv` and two accuracy/macro-F1 plots |
+| `piano_roll_conversion.py` | `piano_rolls/piano_rolls.npz` (not committed) |
+| `train_fcnn.py` | `models/fcnn.pt`, `models/fcnn_prep.joblib`, `fcnn_classification_report.txt`, a row in `dl_results.csv` |
+| `train_cnn.py` | `models/cnn_noaug.pt` or `models/cnn_aug.pt`, `cnn_*_classification_report.txt`, `cnn_*_confusion_matrix.png`, a row in `dl_results.csv` |
 
-All random seeds are fixed at 42, so reruns should reproduce the same splits and results.
+All random seeds are fixed at 42, so reruns should reproduce the same splits. Small numerical differences in the neural network results can still appear between CPU, GPU, and Apple Silicon.
+
+## Running the demo app
+
+The trained weights are included in `models/`, so the app works without retraining.
+
+```bash
+python -m streamlit run src/app.py
+```
+
+Open the local URL it prints (usually <http://localhost:8501>). Choose how to supply a piece:
+
+- **Pick from dataset:** select a composer folder and a file. The app shows the predictions of both the CNN and the fully connected NN. If the piece was in the training set, the prediction is optimistic.
+- **Upload a file:** upload any `.mid` or `.midi` file. The app shows the CNN prediction only, because the fully connected NN needs the 78 stored features, which are precomputed for dataset files only.
+
+For each model the app shows the predicted composer and a bar chart of the class probabilities, plus the piano roll of the piece. The CNN uses the augmented model if `models/cnn_aug.pt` exists and falls back to the non-augmented one otherwise.
 
 ## Evaluation setup
 
-The final composer experiment uses a **stratified 60/20/20 split**:
+The final composer experiment uses a **stratified 60/20/20 split**, shared by every model in the project:
 
 | Split | Pieces | Purpose |
 | --- | ---: | --- |
 | Training | 147 | Fit candidate models |
-| Development | 49 | Compare models and pick the best |
-| Test | 49 | Evaluated once, after model selection |
+| Development | 49 | Compare models, tune, and early-stop |
+| Test | 49 | Evaluated once per model, after model selection |
 
-The selected model (highest development macro-F1) is refit on train + development (196 pieces) and scored a single time on the test set.
-
-Pipelines use median imputation and standard scaling where appropriate. Logistic Regression and SVM use balanced class weights. The compared models are Logistic Regression, RBF SVM (`C=10`, `gamma=0.01`), Gradient Boosting, KNN (`k=7`, distance-weighted, Euclidean), and LDA. Macro-F1 is the selection metric because it weights every composer equally despite the class imbalance.
+The classical final model (highest development macro-F1) is refit on train + development (196 pieces) before the single test evaluation. The neural networks are trained on the training set only, with early stopping on the development set. Macro-F1 is the selection metric because it weights every composer equally despite the class imbalance.
 
 ## Results
 
-### Composer classification
+### Composer classification: all models
 
-Development-set comparison:
+Development-set comparison of the classical models:
 
 | Model | Dev accuracy | Dev macro-F1 |
 | --- | ---: | ---: |
@@ -154,7 +255,23 @@ Development-set comparison:
 
 The SVM has the highest accuracy, but Logistic Regression has the best macro-F1 and was selected. On 49 development pieces the gap between these models is small enough that the choice should not be over-read.
 
-Final test result for Logistic Regression: **46.9% accuracy, 0.451 macro-F1** (23 of 49 correct).
+Final results on the held-out test set:
+
+| Model | Input | Dev accuracy | Dev macro-F1 | Test accuracy | Test macro-F1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Fully connected NN | 78 features | 0.592 | 0.547 | **0.510** (25/49) | **0.502** |
+| Logistic Regression | 78 features | 0.469 | 0.479 | 0.469 (23/49) | 0.451 |
+| CNN, augmented | piano rolls | 0.286 | 0.241 | 0.265 (13/49) | 0.293 |
+| CNN, no augmentation | piano rolls | 0.286 | 0.255 | 0.184 (9/49) | 0.133 |
+
+What the numbers do and do not say:
+
+- **Features beat raw piano rolls here.** With 147 training pieces, a CNN has too little data to learn stylistic patterns from scratch, while the engineered features already encode musical structure such as intervals and pitch-class usage.
+- **The CNN without augmentation is at the majority-class baseline.** Always predicting Chopin scores 9/49 (18.4%), which equals its test accuracy, so it learned little that generalizes.
+- **Augmentation helped the CNN, but treat the size of the gain with care.** Test accuracy went from 9 to 13 correct pieces and macro-F1 from 0.133 to 0.293, while development accuracy was identical (0.286) for both runs. Each run uses a single seed and 49 test pieces.
+- **The fully connected NN and Logistic Regression differ by 2 pieces** (25 vs. 23 correct), which is not a reliable ranking. They are also not trained identically: the NN uses the training set only with early stopping on the development set, whereas the final Logistic Regression is refit on train + development.
+
+### Per-composer results: Logistic Regression
 
 | Composer | Precision | Recall | F1 | Test pieces |
 | --- | ---: | ---: | ---: | ---: |
@@ -170,11 +287,11 @@ Final test result for Logistic Regression: **46.9% accuracy, 0.451 macro-F1** (2
 | Beethoven | 0.25 | 0.17 | 0.20 | 6 |
 | Grieg | 0.00 | 0.00 | 0.00 | 3 |
 
-Liszt and Haydn are recognized best, while Grieg is never identified correctly. The confusion matrix is in `data/processed/confusion_matrix_final_logistic_regression.png`.
+Liszt and Haydn are recognized best, while Grieg is never identified correctly. The confusion matrix is in `data/processed/confusion_matrix_final_logistic_regression.png`. Per-composer reports and confusion matrices for the neural networks are in `data/processed/fcnn_classification_report.txt` and `data/processed/cnn_*_classification_report.txt` / `cnn_*_confusion_matrix.png`. For the fully connected NN, Haydn is recognized perfectly and Mozart, Schubert, and Albéniz are also well recognized, while Grieg is again never identified.
 
 ### Feature set ablation
 
-An exploratory experiment with the RBF SVM adds feature groups step by step. It used the earlier 80/20 holdout split, **not** the final 60/20/20 evaluation, so these numbers are not comparable to the 46.9% test result above.
+An exploratory experiment with the RBF SVM adds feature groups step by step. It used an earlier 80/20 holdout split, **not** the final 60/20/20 evaluation, so these numbers are not comparable to the test results above.
 
 | Feature set | Features | Accuracy | Macro-F1 |
 | --- | ---: | ---: | ---: |
@@ -183,7 +300,7 @@ An exploratory experiment with the RBF SVM adds feature groups step by step. It 
 | + Melodic interval histogram | 53 | 0.551 | 0.511 |
 | + Vertical interval histogram | 78 | 0.571 | 0.545 |
 
-Accuracy rises with every added group, which suggests that interval information helps. Keep in mind that the whole range from 20 to 78 features spans 8 pieces out of 49 (20 vs. 28 correct), so the trend is encouraging but not statistically conclusive.
+Accuracy rises with every added group, which suggests that interval information helps. The whole range from 20 to 78 features spans 8 pieces out of 49 (20 vs. 28 correct), so the trend is encouraging but not statistically conclusive.
 
 ### Era classification
 
@@ -218,22 +335,30 @@ Permutation importance for the SVM (development set, macro-F1) ranks a few verti
 
 ## Limitations
 
-- **Small dataset and test set.** With 245 pieces and 49 test pieces (as few as 3 per composer), one prediction moves accuracy by about 2 points.
-- **Possible leakage between related pieces.** Splits are made per MIDI file, not per composition, so movements of the same work can land in both training and test sets and make the task look easier than it is.
+- **Small dataset and test set.** With 245 pieces and 49 test pieces (as few as 3 per composer), one prediction moves accuracy by about 2 points. Neural network results come from a single seed.
+- **Possible leakage between related pieces.** Splits are made per MIDI file, not per composition, so movements of the same work can land in both training and test sets and make the task look easier than it is. This affects every model, including the neural networks.
 - **Class imbalance.** Class weights and macro-F1 reduce, but do not remove, the influence of the larger composers.
 - **Approximate melodic intervals.** They are computed from all notes sorted by start time, without separating voices or hands, so they describe overall note-to-note pitch movement and not a true melodic line.
 - **Vertical interval sign.** The sign of a vertical interval depends on note ordering, so individual signed bins should not be read as "ascending" or "descending" harmony.
+- **Piano-roll truncation.** Pieces are cropped to the first 153.6 seconds, and notes outside MIDI 24-87 are dropped.
+- **CNN limited by data.** A CNN trained from scratch on 147 pieces underperforms feature-based models, and its augmentation gains are measured on a very small test set.
 - **Simplified era labels.** The Classical vs. Romantic split is a convenience grouping, and it is heavily skewed toward Romantic.
-- **Model selection on a small dev set.** Tuning and model choice used the same 49 development pieces, which can overfit that set.
+- **Model selection on a small dev set.** Tuning, model choice, and early stopping used the same 49 development pieces, which can overfit that set.
+- **Demo predictions on training data.** For dataset files that were in the training set, the app's predictions are optimistic. Uploaded files get the CNN prediction only.
 
 ## Future work
 
-- Split by composition (`GroupKFold` or similar) and use repeated cross-validation for more reliable estimates
+- Split by composition (`GroupKFold` or similar) and use repeated cross-validation and multiple seeds for more reliable estimates
 - Extract a proper melodic line (for example, the top voice, or per-hand tracks)
 - Add rhythm, tempo, and key-normalized pitch-class features
 - Report a majority-class baseline next to every result
-- Try sequence models on piano rolls or note tokens, which would need more data
+- Collect more data or use pretrained or self-supervised music models, and try sequence models on piano rolls or note tokens
+- Compute the 78 features for uploaded files inside the app so the fully connected NN also works on uploads
 
 ## Conclusion
 
-Hand-engineered symbolic features carry real stylistic information: the final model identifies the composer correctly about 47% of the time across 11 classes, several times better than chance, and the broader Classical vs. Romantic split is much easier than telling individual composers apart. Interval-based features contribute the most. The small, imbalanced dataset and the possibility of related pieces sharing splits mean the exact numbers should be treated as estimates.
+Hand-engineered symbolic features carry real stylistic information: the best models identify the composer correctly about 47-51% of the time across 11 classes, several times better than chance, and the broader Classical vs. Romantic split is much easier than telling individual composers apart. Interval-based features contribute the most. A CNN on raw piano rolls does not match the feature-based models at this dataset size, although augmentation narrows the gap somewhat. The small, imbalanced dataset and the possibility of related pieces sharing splits mean the exact numbers should be treated as estimates.
+
+## Data source
+
+Classical Music MIDI dataset by Soumik Rakshit, Kaggle: <https://www.kaggle.com/datasets/soumikrakshit/classical-music-midi>
