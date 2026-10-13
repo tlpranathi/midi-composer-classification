@@ -1,0 +1,17 @@
+              precision    recall  f1-score   support
+
+     albeniz       1.00      0.67      0.80         3
+       beeth       0.00      0.00      0.00         6
+      chopin       0.00      0.00      0.00         9
+       grieg       0.40      0.67      0.50         3
+       haydn       1.00      0.25      0.40         4
+       liszt       1.00      0.33      0.50         3
+ mendelssohn       0.00      0.00      0.00         3
+      mozart       0.33      0.50      0.40         4
+    schubert       0.18      0.67      0.29         6
+    schumann       0.00      0.00      0.00         5
+      tschai       0.33      0.33      0.33         3
+
+    accuracy                           0.27        49
+   macro avg       0.39      0.31      0.29        49
+weighted avg       0.30      0.27      0.23        49
